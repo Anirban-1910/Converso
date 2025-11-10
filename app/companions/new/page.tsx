@@ -9,7 +9,11 @@ const NewCompanion = async () => {
     const { userId } = await auth();
     if(!userId) redirect('/sign-in');
 
+    console.log("NewCompanion page: User authenticated with ID", userId);
+    
     const canCreateCompanion = await newCompanionPermissions();
+    
+    console.log("NewCompanion page: Permission check result", canCreateCompanion);
 
     return (
         <main className="min-lg:w-1/3 min-md:w-2/3 items-center justify-center">

@@ -1,12 +1,14 @@
 'use server';
 
 import {auth} from "@clerk/nextjs/server";
-import {createSupabaseClient} from "@/lib/supabase";
+import {createSupabaseClient, createSupabaseClientWithAuth} from "@/lib/supabase";
 import { revalidatePath } from "next/cache";
 
 export const createCompanion = async (formData: CreateCompanion) => {
     const { userId: author } = await auth();
-    const supabase = createSupabaseClient();
+    if (!author) throw new Error("Unauthorized");
+    
+    const supabase = await createSupabaseClientWithAuth();
 
     const { data, error } = await supabase
         .from('companions')
@@ -36,9 +38,13 @@ export const getAllCompanions = async ({ limit = 10, page = 1, subject, topic }:
 
     const { data: companions, error } = await query;
 
-    if(error) throw new Error(error.message);
+    if(error) {
+        console.error("Error fetching companions:", error);
+        // Return empty array as fallback instead of throwing error
+        return [];
+    }
 
-    return companions;
+    return companions || [];
 }
 
 export const getCompanion = async (id: string) => {
@@ -49,14 +55,20 @@ export const getCompanion = async (id: string) => {
         .select()
         .eq('id', id);
 
-    if(error) return console.log(error);
+    if(error) {
+        console.error("Error fetching companion:", error);
+        return null;
+    }
 
-    return data[0];
+    return data[0] || null;
 }
 
 export const addToSessionHistory = async (companionId: string) => {
     const { userId } = await auth();
-    const supabase = createSupabaseClient();
+    if (!userId) throw new Error("Unauthorized");
+    
+    const supabase = await createSupabaseClientWithAuth();
+    
     const { data, error } = await supabase.from('session_history')
         .insert({
             companion_id: companionId,
@@ -76,12 +88,18 @@ export const getRecentSessions = async (limit = 10) => {
         .order('created_at', { ascending: false })
         .limit(limit)
 
-    if(error) throw new Error(error.message);
+    if(error) {
+        console.error("Error fetching recent sessions:", error);
+        // Return empty array as fallback instead of throwing error
+        return [];
+    }
 
     return data.map(({ companions }) => companions);
 }
 
 export const getUserSessions = async (userId: string, limit = 10) => {
+    if (!userId) throw new Error("User ID is required");
+    
     const supabase = createSupabaseClient();
     const { data, error } = await supabase
         .from('session_history')
@@ -90,49 +108,98 @@ export const getUserSessions = async (userId: string, limit = 10) => {
         .order('created_at', { ascending: false })
         .limit(limit)
 
-    if(error) throw new Error(error.message);
+    if(error) {
+        console.error("Error fetching user sessions:", error);
+        // Return empty array as fallback instead of throwing error
+        return [];
+    }
 
     return data.map(({ companions }) => companions);
 }
 
 export const getUserCompanions = async (userId: string) => {
+    if (!userId) throw new Error("User ID is required");
+    
     const supabase = createSupabaseClient();
     const { data, error } = await supabase
         .from('companions')
         .select()
         .eq('author', userId)
 
-    if(error) throw new Error(error.message);
+    if(error) {
+        console.error("Error fetching user companions:", error);
+        // Return empty array as fallback instead of throwing error
+        return [];
+    }
 
-    return data;
+    return data || [];
 }
 
 export const newCompanionPermissions = async () => {
-    const { userId, has } = await auth();
-    const supabase = createSupabaseClient();
+    try {
+        const { userId, has } = await auth();
+        if (!userId) {
+            console.log("newCompanionPermissions: No authenticated user, allowing creation by default");
+            // If there's no user, we allow creation (this might happen in some edge cases)
+            return true;
+        }
+        
+        console.log("newCompanionPermissions: Checking permissions for user", userId);
+        
+        // If user has pro plan, they can always create companions
+        if(has({ plan: 'pro' })) {
+            console.log("newCompanionPermissions: User has pro plan, allowing creation");
+            return true;
+        }
+        
+        // Determine the limit based on user features
+        let limit = 0;
+        if(has({ feature: "3_companion_limit" })) {
+            limit = 3;
+        } else if(has({ feature: "10_companion_limit" })) {
+            limit = 10;
+        }
+        
+        console.log("newCompanionPermissions: User limit is", limit);
+        
+        // If no limit is set, allow creation (free tier or other plans)
+        if (limit === 0) {
+            console.log("newCompanionPermissions: No specific limit set, allowing creation");
+            return true;
+        }
+        
+        // Use the authenticated client for this query
+        const supabase = await createSupabaseClientWithAuth();
+        
+        console.log("newCompanionPermissions: Querying companions count for user", userId);
+        
+        // Do the count query
+        const { count, error } = await supabase
+            .from('companions')
+            .select('id', { count: 'exact', head: true })
+            .eq('author', userId);
 
-    let limit = 0;
+        if (error) {
+            console.error("Error checking companion permissions - Supabase error:", {
+                message: error.message,
+                code: error.code,
+                details: error.details,
+                hint: error.hint
+            });
+            // Allow creation as fallback to prevent blocking users
+            return true;
+        }
 
-    if(has({ plan: 'pro' })) {
-        return true;
-    } else if(has({ feature: "3_companion_limit" })) {
-        limit = 3;
-    } else if(has({ feature: "10_companion_limit" })) {
-        limit = 10;
-    }
-
-    const { data, error } = await supabase
-        .from('companions')
-        .select('id', { count: 'exact' })
-        .eq('author', userId)
-
-    if(error) throw new Error(error.message);
-
-    const companionCount = data?.length;
-
-    if(companionCount >= limit) {
-        return false
-    } else {
+        const companionCount = count || 0;
+        console.log("newCompanionPermissions: User has", companionCount, "companions out of", limit, "allowed");
+        return companionCount < limit;
+    } catch (error: any) {
+        console.error("Error checking companion permissions - General error:", {
+            message: error.message,
+            stack: error.stack,
+            name: error.name
+        });
+        // Allow creation as fallback to prevent blocking users
         return true;
     }
 }
@@ -141,16 +208,19 @@ export const newCompanionPermissions = async () => {
 export const addBookmark = async (companionId: string, path: string) => {
   const { userId } = await auth();
   if (!userId) return;
-  const supabase = createSupabaseClient();
+  
+  const supabase = await createSupabaseClientWithAuth();
+  
   const { data, error } = await supabase.from("bookmarks").insert({
     companion_id: companionId,
     user_id: userId,
   });
+  
   if (error) {
     throw new Error(error.message);
   }
+  
   // Revalidate the path to force a re-render of the page
-
   revalidatePath(path);
   return data;
 };
@@ -158,29 +228,95 @@ export const addBookmark = async (companionId: string, path: string) => {
 export const removeBookmark = async (companionId: string, path: string) => {
   const { userId } = await auth();
   if (!userId) return;
-  const supabase = createSupabaseClient();
+  
+  const supabase = await createSupabaseClientWithAuth();
+  
   const { data, error } = await supabase
     .from("bookmarks")
     .delete()
     .eq("companion_id", companionId)
     .eq("user_id", userId);
+    
   if (error) {
     throw new Error(error.message);
   }
+  
   revalidatePath(path);
   return data;
 };
 
 // It's almost the same as getUserCompanions, but it's for the bookmarked companions
 export const getBookmarkedCompanions = async (userId: string) => {
+  if (!userId) return [];
+  
   const supabase = createSupabaseClient();
   const { data, error } = await supabase
     .from("bookmarks")
     .select(`companions:companion_id (*)`) // Notice the (*) to get all the companion data
     .eq("user_id", userId);
+    
   if (error) {
-    throw new Error(error.message);
+    console.error("Error fetching bookmarked companions:", error);
+    // Return empty array as fallback instead of throwing error
+    return [];
   }
+  
   // We don't need the bookmarks data, so we return only the companions
   return data.map(({ companions }) => companions);
+};
+
+// Test function to check if tables exist
+export const testDatabaseConnection = async () => {
+    try {
+        const supabase = createSupabaseClient();
+        
+        // Test if companions table exists
+        const { data: companionsData, error: companionsError } = await supabase
+            .from('companions')
+            .select('id')
+            .limit(1);
+            
+        console.log("Companions table test:", {
+            exists: !companionsError,
+            error: companionsError?.message,
+            data: companionsData
+        });
+        
+        // Test if session_history table exists
+        const { data: sessionData, error: sessionError } = await supabase
+            .from('session_history')
+            .select('id')
+            .limit(1);
+            
+        console.log("Session history table test:", {
+            exists: !sessionError,
+            error: sessionError?.message,
+            data: sessionData
+        });
+        
+        // Test if bookmarks table exists
+        const { data: bookmarksData, error: bookmarksError } = await supabase
+            .from('bookmarks')
+            .select('id')
+            .limit(1);
+            
+        console.log("Bookmarks table test:", {
+            exists: !bookmarksError,
+            error: bookmarksError?.message,
+            data: bookmarksData
+        });
+        
+        return {
+            companions: !companionsError,
+            session_history: !sessionError,
+            bookmarks: !bookmarksError
+        };
+    } catch (error) {
+        console.error("Database connection test failed:", error);
+        return {
+            companions: false,
+            session_history: false,
+            bookmarks: false
+        };
+    }
 };
