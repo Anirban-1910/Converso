@@ -1,4 +1,3 @@
-
 import {
     Table,
     TableBody,
@@ -19,6 +18,18 @@ interface CompanionsListProps {
 }
 
 const CompanionsList = ({ title, companions, classNames }: CompanionsListProps) => {
+    // Handle the case when there are no companions
+    if (!companions || companions.length === 0) {
+        return (
+            <article className={cn('companion-list', classNames)}>
+                <h2 className="font-bold text-3xl">{title}</h2>
+                <div className="w-full text-center py-8">
+                    <p className="text-gray-500">No sessions found.</p>
+                </div>
+            </article>
+        );
+    }
+
     return (
         <article className={cn('companion-list', classNames)}>
             <h2 className="font-bold text-3xl">{title}</h2>
@@ -32,7 +43,7 @@ const CompanionsList = ({ title, companions, classNames }: CompanionsListProps) 
                     </TableRow>
                 </TableHeader>
                 <TableBody>
-                    {companions?.map(({id, subject, name, topic, duration}) => (
+                    {companions.map(({id, subject, name, topic, duration}) => (
                         <TableRow key={id}>
                             <TableCell>
                                 <Link href={`/companions/${id}`}>

@@ -24,7 +24,8 @@ import {
 import {subjects} from "@/constants";
 import {Textarea} from "@/components/ui/textarea";
 import {createCompanion} from "@/lib/actions/companion.actions";
-import {redirect} from "next/navigation";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
 
 const formSchema = z.object({
     name: z.string().min(1, { message: 'Companion is required.'}),
@@ -36,6 +37,10 @@ const formSchema = z.object({
 })
 
 const CompanionForm = () => {
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [submitError, setSubmitError] = useState<string | null>(null);
+    const router = useRouter();
+    
     const form = useForm<z.infer<typeof formSchema>>({
         resolver: zodResolver(formSchema),
         defaultValues: {
@@ -49,19 +54,41 @@ const CompanionForm = () => {
     })
 
     const onSubmit = async (values: z.infer<typeof formSchema>) => {
-        const companion = await createCompanion(values);
+        try {
+            setIsSubmitting(true);
+            setSubmitError(null);
+            
+            const companion = await createCompanion(values);
 
-        if(companion) {
-            redirect(`/companions/${companion.id}`);
-        } else {
-            console.log('Failed to create a companion');
-            redirect('/');
+            if(companion) {
+                // Use router.push instead of redirect in client components
+                router.push(`/companions/${companion.id}`);
+            } else {
+                setSubmitError('Failed to create a companion. Please try again.');
+            }
+        } catch (error: any) {
+            console.error("Error creating companion:", error);
+            
+            // Provide more specific guidance for UUID format issues
+            if (error.message?.includes("User ID format is incompatible")) {
+                setSubmitError("Database configuration issue: Please update your Supabase tables to use TEXT instead of UUID for user ID fields. Check the project documentation for the required SQL commands.");
+            } else {
+                setSubmitError(error.message || 'Failed to create companion. Please try again.');
+            }
+        } finally {
+            setIsSubmitting(false);
         }
     }
 
     return (
         <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
+                {submitError && (
+                    <div className="p-3 bg-red-100 text-red-700 rounded-md">
+                        {submitError}
+                    </div>
+                )}
+                
                 <FormField
                     control={form.control}
                     name="name"
@@ -73,6 +100,7 @@ const CompanionForm = () => {
                                     placeholder="Enter the companion name"
                                     {...field}
                                     className="input"
+                                    disabled={isSubmitting}
                                 />
                             </FormControl>
                             <FormMessage />
@@ -90,6 +118,7 @@ const CompanionForm = () => {
                                     onValueChange={field.onChange}
                                     value={field.value}
                                     defaultValue={field.value}
+                                    disabled={isSubmitting}
                                 >
                                     <SelectTrigger className="input capitalize">
                                         <SelectValue placeholder="Select the subject" />
@@ -122,6 +151,7 @@ const CompanionForm = () => {
                                     placeholder="Ex. Derivates & Integrals"
                                     {...field}
                                     className="input"
+                                    disabled={isSubmitting}
                                 />
                             </FormControl>
                             <FormMessage />
@@ -140,6 +170,7 @@ const CompanionForm = () => {
                                     onValueChange={field.onChange}
                                     value={field.value}
                                     defaultValue={field.value}
+                                    disabled={isSubmitting}
                                 >
                                     <SelectTrigger className="input">
                                         <SelectValue
@@ -171,6 +202,7 @@ const CompanionForm = () => {
                                     onValueChange={field.onChange}
                                     value={field.value}
                                     defaultValue={field.value}
+                                    disabled={isSubmitting}
                                 >
                                     <SelectTrigger className="input">
                                         <SelectValue
@@ -204,13 +236,20 @@ const CompanionForm = () => {
                                     placeholder="15"
                                     {...field}
                                     className="input"
+                                    disabled={isSubmitting}
                                 />
                             </FormControl>
                             <FormMessage />
                         </FormItem>
                     )}
                 />
-                <Button type="submit" className="w-full cursor-pointer">Build Your Companion</Button>
+                <Button 
+                    type="submit" 
+                    className="w-full cursor-pointer" 
+                    disabled={isSubmitting}
+                >
+                    {isSubmitting ? "Creating..." : "Build Your Companion"}
+                </Button>
             </form>
         </Form>
     )

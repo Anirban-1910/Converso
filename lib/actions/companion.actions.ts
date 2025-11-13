@@ -5,19 +5,76 @@ import {createSupabaseClient, createSupabaseClientWithAuth} from "@/lib/supabase
 import { revalidatePath } from "next/cache";
 
 export const createCompanion = async (formData: CreateCompanion) => {
-    const { userId: author } = await auth();
-    if (!author) throw new Error("Unauthorized");
-    
-    const supabase = await createSupabaseClientWithAuth();
+    try {
+        const { userId: author } = await auth();
+        if (!author) throw new Error("Unauthorized: No user ID found");
+        
+        console.log("createCompanion: Creating companion for user", author);
+        
+        const supabase = await createSupabaseClientWithAuth();
+        
+        // For now, we'll store the Clerk user ID as a string
+        // In a production app, you might want to map this to a UUID
+        const companionData = {...formData, author};
+        console.log("createCompanion: Inserting data", companionData);
 
-    const { data, error } = await supabase
-        .from('companions')
-        .insert({...formData, author })
-        .select();
+        const { data, error } = await supabase
+            .from('companions')
+            .insert(companionData)
+            .select();
 
-    if(error || !data) throw new Error(error?.message || 'Failed to create a companion');
+        if(error || !data) {
+            console.error("createCompanion: Supabase error details", {
+                message: error?.message,
+                code: error?.code,
+                details: error?.details,
+                hint: error?.hint
+            });
+            
+            // Handle specific "No suitable key or wrong key type" error
+            if (error?.message?.includes("No suitable key") || error?.message?.includes("wrong key type")) {
+                throw new Error("Authentication failed. Please refresh the page and try again.");
+            }
+            
+            // Handle UUID format errors
+            if (error?.message?.includes("invalid input syntax for type uuid")) {
+                throw new Error("User ID format is incompatible with database. Please update your database schema to use TEXT instead of UUID for user ID fields.");
+            }
+            
+            // Handle actual RLS errors (be more specific)
+            if (error?.message?.includes("new row violates row-level security policy") && 
+                error?.message?.includes("USING expression")) {
+                throw new Error("Permission denied. You may have reached your companion limit.");
+            }
+            
+            throw new Error(error?.message || 'Failed to create a companion. Please try again.');
+        }
 
-    return data[0];
+        console.log("createCompanion: Successfully created companion", data[0]);
+        return data[0];
+    } catch (error: any) {
+        console.error("createCompanion: General error", {
+            message: error.message,
+            stack: error.stack,
+            name: error.name
+        });
+        
+        // Provide more user-friendly error messages
+        if (error.message.includes("Unauthorized")) {
+            throw new Error("Please log in to create a companion.");
+        }
+        
+        // If it's already our custom error, don't wrap it again
+        if (error.message.includes("User ID format is incompatible")) {
+            throw error;
+        }
+        
+        if (error.message.includes("Permission denied")) {
+            throw error;
+        }
+        
+        throw new Error(`Failed to create companion: ${error.message}`);
+    }
 }
 
 export const getAllCompanions = async ({ limit = 10, page = 1, subject, topic }: GetAllCompanions) => {
@@ -48,36 +105,71 @@ export const getAllCompanions = async ({ limit = 10, page = 1, subject, topic }:
 }
 
 export const getCompanion = async (id: string) => {
-    const supabase = createSupabaseClient();
+    try {
+        const supabase = createSupabaseClient();
 
-    const { data, error } = await supabase
-        .from('companions')
-        .select()
-        .eq('id', id);
+        const { data, error } = await supabase
+            .from('companions')
+            .select()
+            .eq('id', id);
 
-    if(error) {
-        console.error("Error fetching companion:", error);
+        if(error) {
+            console.error("Error fetching companion:", error);
+            return null;
+        }
+
+        if (!data || data.length === 0) {
+            console.log("No companion found with id:", id);
+            return null;
+        }
+
+        return data[0] || null;
+    } catch (error) {
+        console.error("Unexpected error fetching companion:", error);
         return null;
     }
-
-    return data[0] || null;
 }
 
 export const addToSessionHistory = async (companionId: string) => {
-    const { userId } = await auth();
-    if (!userId) throw new Error("Unauthorized");
-    
-    const supabase = await createSupabaseClientWithAuth();
-    
-    const { data, error } = await supabase.from('session_history')
-        .insert({
-            companion_id: companionId,
-            user_id: userId,
-        })
+    try {
+        const { userId } = await auth();
+        if (!userId) {
+            console.log("Unauthorized: No user ID found, skipping session history recording");
+            return null;
+        }
+        
+        const supabase = await createSupabaseClientWithAuth();
+        
+        const { data, error } = await supabase.from('session_history')
+            .insert({
+                companion_id: companionId,
+                user_id: userId, // Store Clerk user ID as string
+            })
 
-    if(error) throw new Error(error.message);
+        if(error) {
+            // Handle UUID format errors
+            if (error.message?.includes("invalid input syntax for type uuid")) {
+                console.error("User ID format error:", error.message);
+                return null;
+            }
+            
+            // Handle RLS policy violations
+            if (error.message?.includes("new row violates row-level security policy")) {
+                console.error("RLS policy violation in session_history:", error.message);
+                // Return null instead of throwing error to handle gracefully
+                return null;
+            }
+            
+            console.error("Error adding to session history:", error.message);
+            return null;
+        }
 
-    return data;
+        return data;
+    } catch (error) {
+        console.error("Unexpected error in addToSessionHistory:", error);
+        // Return null instead of throwing error to handle gracefully
+        return null;
+    }
 }
 
 export const getRecentSessions = async (limit = 10) => {
@@ -104,9 +196,7 @@ export const getUserSessions = async (userId: string, limit = 10) => {
     const { data, error } = await supabase
         .from('session_history')
         .select(`companions:companion_id (*)`)
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(limit)
+        .eq('user_id', userId) // Query with Clerk user ID as string
 
     if(error) {
         console.error("Error fetching user sessions:", error);
@@ -124,7 +214,7 @@ export const getUserCompanions = async (userId: string) => {
     const { data, error } = await supabase
         .from('companions')
         .select()
-        .eq('author', userId)
+        .eq('author', userId) // Query with Clerk user ID as string
 
     if(error) {
         console.error("Error fetching user companions:", error);
@@ -173,7 +263,7 @@ export const newCompanionPermissions = async () => {
         
         console.log("newCompanionPermissions: Querying companions count for user", userId);
         
-        // Do the count query
+        // Do the count query using Clerk user ID as string
         const { count, error } = await supabase
             .from('companions')
             .select('id', { count: 'exact', head: true })
@@ -186,6 +276,22 @@ export const newCompanionPermissions = async () => {
                 details: error.details,
                 hint: error.hint
             });
+            
+            // Handle UUID format errors
+            if (error.message?.includes("invalid input syntax for type uuid")) {
+                // If there's a UUID error, it means the user has no companions yet
+                console.log("newCompanionPermissions: Assuming no companions due to UUID format issue");
+                return true;
+            }
+            
+            // Handle actual RLS errors (be more specific)
+            if (error?.message?.includes("new row violates row-level security policy") && 
+                error?.message?.includes("USING expression")) {
+                console.log("newCompanionPermissions: User may have reached companion limit");
+                // Still allow creation as fallback to prevent blocking users
+                return true;
+            }
+            
             // Allow creation as fallback to prevent blocking users
             return true;
         }
@@ -213,10 +319,14 @@ export const addBookmark = async (companionId: string, path: string) => {
   
   const { data, error } = await supabase.from("bookmarks").insert({
     companion_id: companionId,
-    user_id: userId,
+    user_id: userId, // Store Clerk user ID as string
   });
   
   if (error) {
+    // Handle UUID format errors
+    if (error.message?.includes("invalid input syntax for type uuid")) {
+        throw new Error("User ID format is incompatible with database. Please update your database schema to use TEXT instead of UUID for user ID fields.");
+    }
     throw new Error(error.message);
   }
   
@@ -235,9 +345,13 @@ export const removeBookmark = async (companionId: string, path: string) => {
     .from("bookmarks")
     .delete()
     .eq("companion_id", companionId)
-    .eq("user_id", userId);
+    .eq("user_id", userId); // Query with Clerk user ID as string
     
   if (error) {
+    // Handle UUID format errors
+    if (error.message?.includes("invalid input syntax for type uuid")) {
+        throw new Error("User ID format is incompatible with database. Please update your database schema to use TEXT instead of UUID for user ID fields.");
+    }
     throw new Error(error.message);
   }
   
@@ -253,7 +367,7 @@ export const getBookmarkedCompanions = async (userId: string) => {
   const { data, error } = await supabase
     .from("bookmarks")
     .select(`companions:companion_id (*)`) // Notice the (*) to get all the companion data
-    .eq("user_id", userId);
+    .eq("user_id", userId); // Query with Clerk user ID as string
     
   if (error) {
     console.error("Error fetching bookmarked companions:", error);

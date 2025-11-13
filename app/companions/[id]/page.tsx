@@ -14,6 +14,12 @@ const CompanionSession = async ({ params }: CompanionSessionPageProps) => {
     const companion = await getCompanion(id);
     const user = await currentUser();
 
+    // Handle the case where companion is null
+    if (!companion) {
+        console.log("Companion not found, redirecting to companions list");
+        redirect('/companions');
+    }
+
     const { name, subject, title, topic, duration } = companion;
 
     if(!user) redirect('/sign-in');

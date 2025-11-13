@@ -36,9 +36,18 @@ const CompanionComponent = ({ companionId, subject, topic, name, userName, userI
     useEffect(() => {
         const onCallStart = () => setCallStatus(CallStatus.ACTIVE);
 
-        const onCallEnd = () => {
+        const onCallEnd = async () => {
             setCallStatus(CallStatus.FINISHED);
-            addToSessionHistory(companionId)
+            try {
+                const result = await addToSessionHistory(companionId);
+                if (result === null) {
+                    console.log("Session history recording skipped or failed gracefully");
+                } else {
+                    console.log("Session history recorded successfully");
+                }
+            } catch (error) {
+                console.error("Unexpected error when adding session to history:", error);
+            }
         }
 
         const onMessage = (message: Message) => {
